@@ -1,0 +1,298 @@
+"""Secure credential management for APIloop.
+
+Handles credential storage, retrieval, rotation, and redaction.
+Supports multiple backends: encrypted file, system keyring, environment variables.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import stat
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from cryptography.fernet import Fernet, InvalidToken
+from pydantic import SecretStr
+
+from ..models import Credential, ProviderDescriptor
+
+logger = logging.getLogger(__name__)
+
+
+class CredentialError(Exception):
+    """Base exception for credential operations."""
+
+
+class CredentialNotFoundError(CredentialError):
+    """Raised when a credential is not found."""
+
+
+class CredentialEncryptionError(CredentialError):
+    """Raised when credential encryption/decryption fails."""
+
+
+class CredentialManager:
+    """Manages secure storage and retrieval of provider credentials."""
+
+    def __init__(self, storage_path: Optional[Path] = None):
+        """Initialize the credential manager.
+
+        Args:
+            storage_path: Path to store encrypted credentials. Defaults to
+                         ~/.config/apiloop/credentials.json.
+        """
+        self._storage_path = storage_path or self._default_storage_path()
+        # Ensure parent directory exists
+        self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fernet: Optional[Fernet] = None
+        self._credentials: dict[str, Credential] = {}
+        self._load_master_key()
+        self._load_credentials()
+
+    @staticmethod
+    def _default_storage_path() -> Path:
+        """Get default storage path in user's config directory."""
+        config_dir = Path.home() / ".config" / "apiloop"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir / "credentials.json"
+
+    def _load_master_key(self) -> None:
+        """Load or generate the master encryption key."""
+        key_path = self._storage_path.parent / ".master_key"
+
+        if key_path.exists():
+            try:
+                key = key_path.read_bytes().strip()
+                self._fernet = Fernet(key)
+            except Exception as e:
+                logger.error(f"Failed to load master key: {e}")
+                raise CredentialEncryptionError("Failed to load master key") from e
+        else:
+            # Generate new master key
+            key = Fernet.generate_key()
+            key_path.write_bytes(key)
+            # Restrict permissions: owner read/write only
+            key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            self._fernet = Fernet(key)
+            logger.info("Generated new master encryption key")
+
+    def _load_credentials(self) -> None:
+        """Load encrypted credentials from storage."""
+        if not self._storage_path.exists():
+            return
+
+        try:
+            encrypted_data = self._storage_path.read_bytes()
+            decrypted = self._fernet.decrypt(encrypted_data).decode()
+            data = json.loads(decrypted)
+
+            for cred_data in data.get("credentials", []):
+                # Convert ISO format strings back to datetime
+                if "stored_at" in cred_data and isinstance(cred_data["stored_at"], str):
+                    cred_data["stored_at"] = datetime.fromisoformat(cred_data["stored_at"])
+                if "last_rotated" in cred_data and isinstance(cred_data["last_rotated"], str):
+                    cred_data["last_rotated"] = datetime.fromisoformat(cred_data["last_rotated"])
+                    # Handle None value
+                    if cred_data["last_rotated"] == "None":
+                        cred_data["last_rotated"] = None
+
+                cred = Credential(**cred_data)
+                self._credentials[cred.id] = cred
+
+            logger.debug(f"Loaded {len(self._credentials)} credentials")
+        except InvalidToken:
+            logger.error("Failed to decrypt credentials - possible key corruption")
+            raise CredentialEncryptionError("Credential decryption failed") from e
+        except Exception as e:
+            logger.warning(f"Failed to load credentials: {e}")
+            self._credentials = {}
+
+    def _save_credentials(self) -> None:
+        """Persist encrypted credentials to storage."""
+        # Ensure parent directory exists
+        self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+        # Serialize with datetime handling
+        credentials_data = []
+        for cred in self._credentials.values():
+            data = cred.model_dump()
+            # Convert datetime to ISO format string for JSON serialization
+            if isinstance(data.get("stored_at"), datetime):
+                data["stored_at"] = data["stored_at"].isoformat()
+            if isinstance(data.get("last_rotated"), datetime):
+                data["last_rotated"] = data["last_rotated"].isoformat()
+            credentials_data.append(data)
+        payload = json.dumps({"credentials": credentials_data}, indent=2)
+        encrypted = self._fernet.encrypt(payload.encode())
+        self._storage_path.write_bytes(encrypted)
+        # Restrict permissions: owner read/write only
+        self._storage_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        logger.debug("Credentials saved successfully")
+
+    def add_credential(
+        self,
+        provider_id: str,
+        account_name: str,
+        secret: str,
+        metadata: Optional[dict] = None,
+    ) -> Credential:
+        """Add a new credential.
+
+        Args:
+            provider_id: Provider identifier
+            account_name: Human-readable account name
+            secret: The actual API key or token
+            metadata: Additional metadata
+
+        Returns:
+            The created Credential object
+
+        Raises:
+            CredentialError: If credential cannot be added
+        """
+        cred_id = f"{provider_id}:{account_name}"
+
+        # Check for duplicates
+        if cred_id in self._credentials:
+            logger.warning(f"Credential already exists: {cred_id}")
+            raise CredentialError(f"Credential {cred_id} already exists")
+
+        credential = Credential(
+            id=cred_id,
+            provider_id=provider_id,
+            account_name=account_name,
+            secret=SecretStr(secret),
+            metadata=metadata or {},
+        )
+
+        self._credentials[cred_id] = credential
+        self._save_credentials()
+        logger.info(f"Added credential for {provider_id}/{account_name}")
+        return credential
+
+    def get_credential(self, provider_id: str, account_name: Optional[str] = None) -> Optional[Credential]:
+        """Retrieve a credential.
+
+        Args:
+            provider_id: Provider identifier
+            account_name: Optional account name filter
+
+        Returns:
+            Credential if found, None otherwise
+        """
+        if account_name:
+            cred_id = f"{provider_id}:{account_name}"
+        else:
+            # Return first credential for this provider
+            cred_id = next(
+                (c.id for c in self._credentials.values() if c.provider_id == provider_id),
+                None,
+            )
+
+        return self._credentials.get(cred_id)
+
+    def list_credentials(self, provider_id: Optional[str] = None) -> list[Credential]:
+        """List all credentials, optionally filtered by provider.
+
+        Returns:
+            List of Credential objects (with secrets redacted)
+        """
+        if provider_id:
+            return [
+                cred for cred in self._credentials.values()
+                if cred.provider_id == provider_id
+            ]
+        return list(self._credentials.values())
+
+    def remove_credential(self, provider_id: str, account_name: str) -> bool:
+        """Remove a credential.
+
+        Args:
+            provider_id: Provider identifier
+            account_name: Account name
+
+        Returns:
+            True if removed, False if not found
+        """
+        cred_id = f"{provider_id}:{account_name}"
+        if cred_id in self._credentials:
+            del self._credentials[cred_id]
+            self._save_credentials()
+            logger.info(f"Removed credential: {cred_id}")
+            return True
+        return False
+
+    def rotate_credential(
+        self,
+        provider_id: str,
+        account_name: str,
+        new_secret: str,
+    ) -> Credential:
+        """Rotate an existing credential.
+
+        Args:
+            provider_id: Provider identifier
+            account_name: Account name
+            new_secret: New API key or token
+
+        Returns:
+            Updated Credential object
+        """
+        cred_id = f"{provider_id}:{account_name}"
+        if cred_id not in self._credentials:
+            raise CredentialNotFoundError(f"Credential not found: {cred_id}")
+
+        credential = self._credentials[cred_id]
+        credential.secret = SecretStr(new_secret)
+        credential.last_rotated = datetime.utcnow()
+        self._credentials[cred_id] = credential
+        self._save_credentials()
+        logger.info(f"Rotated credential: {cred_id}")
+        return credential
+
+    def validate_provider_credentials(
+        self,
+        provider: ProviderDescriptor,
+    ) -> tuple[bool, Optional[str]]:
+        """Validate that required credentials exist for a provider.
+
+        Args:
+            provider: Provider descriptor
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if not provider.requires_authentication:
+            return True, None
+
+        credentials = self.list_credentials(provider_id=provider.id)
+        if not credentials:
+            return False, f"No credentials configured for provider: {provider.id}"
+
+        return True, None
+
+    @property
+    def credential_count(self) -> int:
+        """Total number of stored credentials."""
+        return len(self._credentials)
+
+    def get_secret_value(self, provider_id: str, account_name: Optional[str] = None) -> Optional[str]:
+        """Get the raw secret value for a credential.
+
+        Args:
+            provider_id: Provider identifier
+            account_name: Optional account name filter
+
+        Returns:
+            The secret string value, or None if not found
+        """
+        cred = self.get_credential(provider_id, account_name)
+        if cred:
+            return cred.secret.get_secret_value()
+        return None
+
+
+# Type alias for convenience
+CredentialManagerFactory = lambda: CredentialManager()

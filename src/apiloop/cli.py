@@ -95,8 +95,13 @@ def list(fmt):
 @click.option("--base-url", required=True, help="Base URL of the API endpoint")
 @click.option("--kind", type=click.Choice(["local", "remote", "hybrid"]), default="remote", help="Provider kind")
 @click.option("--auth-method", type=click.Choice(["bearer_token", "api_key", "none"]), default="bearer_token", help="Authentication method")
+@click.option(
+    "--requires-auth/--no-requires-auth",
+    default=None,
+    help="Whether this provider requires credentials (default: inferred from --auth-method)",
+)
 @click.option("--streaming/--no-streaming", default=True, help="Support streaming")
-def add(name, provider_type, base_url, kind, auth_method, streaming):
+def add(name, provider_type, base_url, kind, auth_method, requires_auth, streaming):
     """Add a new provider configuration.
 
     NAME: Unique identifier for this provider (e.g., 'openai', 'ollama-local')
@@ -119,6 +124,11 @@ def add(name, provider_type, base_url, kind, auth_method, streaming):
     kind_map = {"local": ProviderKind.LOCAL, "remote": ProviderKind.REMOTE, "hybrid": ProviderKind.HYBRID}
     provider_kind = kind_map[kind]
 
+    # If not explicitly set, infer from --auth-method: "none" means no
+    # credentials required, anything else means they are.
+    if requires_auth is None:
+        requires_auth = auth_method != "none"
+
     provider = ProviderDescriptor(
         id=name,
         name=name,
@@ -126,6 +136,7 @@ def add(name, provider_type, base_url, kind, auth_method, streaming):
         adapter_type=provider_type,
         base_url=base_url.rstrip("/"),
         authentication_method=auth_method,
+        requires_authentication=requires_auth,
         supports_streaming=streaming,
     )
 

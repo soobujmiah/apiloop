@@ -9,6 +9,18 @@ from apiloop.config import Config, load_config, validate_config
 from apiloop.models import ProviderDescriptor, ProviderKind, ModelDescriptor
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """Isolate Config()'s default path (~/.config/apiloop/config.yaml) per
+    test. Several tests below construct Config()/create_default_config()
+    with no explicit config_path, which resolves against $HOME - without
+    this, they silently read and write the real user's home directory
+    instead of a sandbox, and can even flake depending on whatever's
+    already there.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 @pytest.fixture
 def temp_config_dir(tmp_path):
     """Create a temporary config directory."""

@@ -6,13 +6,16 @@ Supports multiple backends: encrypted file, system keyring, environment variable
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import stat
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
@@ -47,10 +50,26 @@ class CredentialManager:
         self._storage_path = storage_path or self._default_storage_path()
         # Ensure parent directory exists
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_path = self._storage_path.with_name(self._storage_path.name + ".lock")
         self._fernet: Optional[Fernet] = None
         self._credentials: dict[str, Credential] = {}
         self._load_master_key()
         self._load_credentials()
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Serialize the read-modify-write cycle of a mutation across
+        processes/instances via an advisory file lock, so a concurrent
+        writer's change is never silently overwritten by a stale in-memory
+        snapshot (see: credential loss under concurrent CLI/gateway use).
+        """
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _default_storage_path() -> Path:
@@ -89,6 +108,11 @@ class CredentialManager:
             decrypted = self._fernet.decrypt(encrypted_data).decode()
             data = json.loads(decrypted)
 
+            # Replace, don't merge: this method is also called to resync
+            # with disk before a mutation, and a credential removed by
+            # another process/instance in the meantime must disappear here
+            # too, not linger from a stale in-memory copy.
+            self._credentials = {}
             for cred_data in data.get("credentials", []):
                 # Convert ISO format strings back to datetime
                 if "stored_at" in cred_data and isinstance(cred_data["stored_at"], str):
@@ -126,9 +150,22 @@ class CredentialManager:
             credentials_data.append(data)
         payload = json.dumps({"credentials": credentials_data}, indent=2)
         encrypted = self._fernet.encrypt(payload.encode())
-        self._storage_path.write_bytes(encrypted)
-        # Restrict permissions: owner read/write only
-        self._storage_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+        # Write atomically (temp file + rename) so a crash mid-write can't
+        # leave a truncated/corrupt store, and so concurrent readers only
+        # ever see a fully-old or fully-new file, never a torn one.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(self._storage_path.parent), prefix=".credentials-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "wb") as tmp_file:
+                tmp_file.write(encrypted)
+            os.chmod(tmp_name, stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(tmp_name, self._storage_path)
+        except BaseException:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
         logger.debug("Credentials saved successfully")
 
     def add_credential(
@@ -154,21 +191,25 @@ class CredentialManager:
         """
         cred_id = f"{provider_id}:{account_name}"
 
-        # Check for duplicates
-        if cred_id in self._credentials:
-            logger.warning(f"Credential already exists: {cred_id}")
-            raise CredentialError(f"Credential {cred_id} already exists")
+        with self._locked():
+            self._load_credentials()  # resync with disk before mutating
 
-        credential = Credential(
-            id=cred_id,
-            provider_id=provider_id,
-            account_name=account_name,
-            secret=SecretStr(secret),
-            metadata=metadata or {},
-        )
+            # Check for duplicates
+            if cred_id in self._credentials:
+                logger.warning(f"Credential already exists: {cred_id}")
+                raise CredentialError(f"Credential {cred_id} already exists")
 
-        self._credentials[cred_id] = credential
-        self._save_credentials()
+            credential = Credential(
+                id=cred_id,
+                provider_id=provider_id,
+                account_name=account_name,
+                secret=SecretStr(secret),
+                metadata=metadata or {},
+            )
+
+            self._credentials[cred_id] = credential
+            self._save_credentials()
+
         logger.info(f"Added credential for {provider_id}/{account_name}")
         return credential
 
@@ -217,12 +258,14 @@ class CredentialManager:
             True if removed, False if not found
         """
         cred_id = f"{provider_id}:{account_name}"
-        if cred_id in self._credentials:
-            del self._credentials[cred_id]
-            self._save_credentials()
-            logger.info(f"Removed credential: {cred_id}")
-            return True
-        return False
+        with self._locked():
+            self._load_credentials()  # resync with disk before mutating
+            if cred_id in self._credentials:
+                del self._credentials[cred_id]
+                self._save_credentials()
+                logger.info(f"Removed credential: {cred_id}")
+                return True
+            return False
 
     def rotate_credential(
         self,
@@ -241,14 +284,17 @@ class CredentialManager:
             Updated Credential object
         """
         cred_id = f"{provider_id}:{account_name}"
-        if cred_id not in self._credentials:
-            raise CredentialNotFoundError(f"Credential not found: {cred_id}")
+        with self._locked():
+            self._load_credentials()  # resync with disk before mutating
+            if cred_id not in self._credentials:
+                raise CredentialNotFoundError(f"Credential not found: {cred_id}")
 
-        credential = self._credentials[cred_id]
-        credential.secret = SecretStr(new_secret)
-        credential.last_rotated = datetime.utcnow()
-        self._credentials[cred_id] = credential
-        self._save_credentials()
+            credential = self._credentials[cred_id]
+            credential.secret = SecretStr(new_secret)
+            credential.last_rotated = datetime.utcnow()
+            self._credentials[cred_id] = credential
+            self._save_credentials()
+
         logger.info(f"Rotated credential: {cred_id}")
         return credential
 

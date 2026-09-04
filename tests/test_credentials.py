@@ -1,6 +1,7 @@
 """Tests for credential manager."""
 
 import json
+import multiprocessing
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -13,6 +14,12 @@ from apiloop.credentials.manager import (
     CredentialManager,
     CredentialNotFoundError,
 )
+
+
+def _add_credential_worker(storage_path, idx):
+    """Module-level (picklable) helper for multiprocessing-based concurrency tests."""
+    cm = CredentialManager(storage_path=storage_path)
+    cm.add_credential(provider_id=f"concurrent-p{idx}", account_name="acct", secret=f"secret-{idx}")
 
 
 @pytest.fixture
@@ -253,3 +260,61 @@ class TestCredentialRedaction:
         redacted = cred.redact()
         assert "sk-very-long" not in redacted
         assert "***" in redacted
+
+
+class TestCredentialConcurrency:
+    """Concurrent/uncoordinated writers must not silently lose credentials.
+
+    Regression coverage for a real bug: two CredentialManager instances
+    (e.g. two CLI invocations, or a CLI run overlapping the gateway
+    process) each held their own in-memory snapshot and did a blind
+    whole-file overwrite on save, so the second writer silently deleted
+    whatever the first had just persisted.
+    """
+
+    def test_two_instances_no_lost_update(self, temp_config_dir):
+        storage_path = temp_config_dir / "credentials.json"
+        cm_a = CredentialManager(storage_path=storage_path)
+        cm_b = CredentialManager(storage_path=storage_path)
+
+        cm_a.add_credential(provider_id="p1", account_name="a", secret="secret-a")
+        cm_b.add_credential(provider_id="p2", account_name="b", secret="secret-b")
+
+        cm_c = CredentialManager(storage_path=storage_path)
+        ids = {c.id for c in cm_c.list_credentials()}
+        assert ids == {"p1:a", "p2:b"}
+
+    def test_concurrent_os_processes_no_lost_update(self, temp_config_dir):
+        storage_path = temp_config_dir / "credentials.json"
+        CredentialManager(storage_path=storage_path)  # prime the master key first
+
+        n = 6
+        procs = [
+            multiprocessing.Process(target=_add_credential_worker, args=(storage_path, i))
+            for i in range(n)
+        ]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join()
+            assert p.exitcode == 0
+
+        cm = CredentialManager(storage_path=storage_path)
+        ids = {c.id for c in cm.list_credentials()}
+        assert ids == {f"concurrent-p{i}:acct" for i in range(n)}
+
+    def test_removed_credential_does_not_reappear_after_stale_reload(self, temp_config_dir):
+        """_load_credentials() must replace, not merge into, in-memory state -
+        otherwise a credential removed by another instance would linger."""
+        storage_path = temp_config_dir / "credentials.json"
+        cm_a = CredentialManager(storage_path=storage_path)
+        cm_a.add_credential(provider_id="p1", account_name="a", secret="secret-a")
+
+        cm_b = CredentialManager(storage_path=storage_path)
+        cm_b.remove_credential("p1", "a")
+
+        # cm_a still has a stale in-memory copy of p1:a; a subsequent mutation
+        # (which resyncs from disk first) must not resurrect it.
+        cm_a.add_credential(provider_id="p2", account_name="b", secret="secret-b")
+        ids = {c.id for c in cm_a.list_credentials()}
+        assert ids == {"p2:b"}

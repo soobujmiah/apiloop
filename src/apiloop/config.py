@@ -12,16 +12,25 @@ from .models import ModelDescriptor, ProviderDescriptor, ProviderKind
 
 logger = logging.getLogger(__name__)
 
-# Default configuration paths
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "apiloop"
-DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
+def _default_config_path() -> Path:
+    """Compute the default config path fresh on every call.
+
+    Deliberately not a module-level constant: Path.home() must be
+    re-evaluated per call, not frozen at import time, otherwise a process
+    (or test) that changes $HOME after this module first loads - which is
+    exactly what test isolation via monkeypatch.setenv("HOME", ...) does -
+    silently keeps targeting whatever $HOME was active at import time
+    instead. That previously caused tests with no explicit config_path to
+    read and write the real ~/.config/apiloop/config.yaml.
+    """
+    return Path.home() / ".config" / "apiloop" / "config.yaml"
 
 
 class Config:
     """APIloop configuration manager."""
 
     def __init__(self, config_path: Optional[Path] = None):
-        self.config_path = config_path or DEFAULT_CONFIG_FILE
+        self.config_path = config_path or _default_config_path()
         self.providers: dict[str, ProviderDescriptor] = {}
         self.models: dict[str, ModelDescriptor] = {}
         self.routing: dict[str, Any] = {

@@ -1,5 +1,7 @@
 """Tests for the APIloop CLI."""
 
+import json
+
 import pytest
 from click.testing import CliRunner
 
@@ -82,3 +84,44 @@ class TestProviderAdd:
         assert result.exit_code == 0
         provider = _reload_provider("my-provider2")
         assert provider.requires_authentication is True
+
+    def test_list_json_output_is_parseable(self, runner):
+        """Regression: --format json used to fall through Pydantic objects
+        to json.dumps(default=str), producing repr strings as values
+        instead of nested JSON - unusable for any scripting/automation."""
+        runner.invoke(cli, [
+            "provider", "add", "my-openai",
+            "--type", "openai_compatible", "--base-url", "https://api.openai.com/v1",
+        ])
+        result = runner.invoke(cli, ["provider", "list", "--format", "json"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert isinstance(data["my-openai"], dict)
+        assert data["my-openai"]["base_url"] == "https://api.openai.com/v1"
+        assert data["my-openai"]["adapter_type"] == "openai_compatible"
+
+
+class TestProviderCredential:
+    """Regression coverage: the README documents `apiloop provider
+    credential add NAME --api-key ...`, but that command didn't exist -
+    the actual registered command was the flat `credential-add`."""
+
+    def test_credential_add_nested_command_matches_docs(self, runner):
+        runner.invoke(cli, [
+            "provider", "add", "my-openai",
+            "--type", "openai_compatible", "--base-url", "https://api.openai.com/v1",
+        ])
+        result = runner.invoke(cli, [
+            "provider", "credential", "add", "my-openai",
+            "--account", "default", "--api-key", "sk-test-key-12345",
+        ])
+        assert result.exit_code == 0
+        assert "✓" in result.output
+
+    def test_credential_add_requires_existing_provider(self, runner):
+        result = runner.invoke(cli, [
+            "provider", "credential", "add", "nonexistent",
+            "--account", "default", "--api-key", "sk-test-key-12345",
+        ])
+        assert result.exit_code == 1

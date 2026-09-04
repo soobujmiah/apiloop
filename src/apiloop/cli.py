@@ -81,7 +81,8 @@ def list(fmt):
         return
 
     if fmt == "json":
-        click.echo(json.dumps(config.providers, indent=2, default=str))
+        providers_data = {pid: p.model_dump() for pid, p in config.providers.items()}
+        click.echo(json.dumps(providers_data, indent=2, default=str))
     else:
         click.echo(f"{'ID':<25} {'Name':<30} {'Kind':<10} {'Health':<15}")
         click.echo("-" * 80)
@@ -151,7 +152,13 @@ def add(name, provider_type, base_url, kind, auth_method, requires_auth, streami
     click.echo(f"  apiloop provider credential add {name} --account default")
 
 
-@provider.command()
+@provider.group()
+def credential():
+    """Manage provider credentials."""
+    pass
+
+
+@credential.command(name="add")
 @click.argument("name")
 @click.option("--account", default="default", help="Account name")
 @click.option("--api-key", prompt="API Key", hide_input=True, confirmation_prompt=False, help="API key")
@@ -369,6 +376,12 @@ def doctor():
     # Config validation
     config = load_config()
     errors = validate_config(config)
+
+    if config.load_errors:
+        click.echo("⚠ Config entries skipped while loading config.yaml:")
+        for error in config.load_errors:
+            click.echo(f"  - {error}")
+        click.echo("")
 
     if errors:
         click.echo("❌ Configuration Errors:")

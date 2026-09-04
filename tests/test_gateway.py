@@ -1,6 +1,9 @@
 """Tests for the FastAPI gateway: authentication boundary and debug endpoint gating."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 import apiloop.config as config_module
@@ -20,6 +23,29 @@ def isolated_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
+    from apiloop.api.app import app
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def configured_client(tmp_path):
+    """A gateway with one provider + model already configured, so requests
+    can reach the adapter-selection stage instead of failing at routing."""
+    config_dir = tmp_path / ".config" / "apiloop"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.yaml").write_text(yaml.dump({
+        "providers": {
+            "test-provider": {
+                "id": "test-provider", "name": "Test", "kind": "remote",
+                "base_url": "https://example.com/v1", "requires_authentication": False,
+            }
+        },
+        "models": {
+            "test-model": {"id": "test-model", "provider_id": "test-provider", "display_name": "Test Model"},
+        },
+    }))
+
     from apiloop.api.app import app
     with TestClient(app) as c:
         yield c
@@ -88,3 +114,35 @@ class TestGatewayKeyStorage:
         key_path = tmp_path / ".gateway_key"
         _load_or_create_gateway_key(key_path)
         assert key_path.stat().st_mode & 0o777 == 0o600
+
+
+class TestAdapterLifecycle:
+    """Regression coverage: the gateway used to construct a fresh adapter
+    (and therefore a fresh, never-closed httpx.AsyncClient) on every single
+    request instead of reusing one per provider and closing it on shutdown."""
+
+    def test_adapter_is_reused_across_requests(self, configured_client):
+        import apiloop.api.app as app_module
+
+        fake_adapter = AsyncMock()
+        fake_adapter.chat_completion.side_effect = Exception("boom - no real network call expected")
+
+        with patch.object(app_module.ProviderAdapterFactory, "create", return_value=fake_adapter) as mock_create:
+            key = configured_client.app.state.gateway_api_key
+            headers = {"Authorization": f"Bearer {key}"}
+            body = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+
+            configured_client.post("/v1/chat/completions", json=body, headers=headers)
+            configured_client.post("/v1/chat/completions", json=body, headers=headers)
+
+        assert mock_create.call_count == 1
+
+    def test_adapters_are_closed_on_shutdown(self, tmp_path):
+        config_module._config_instance = None
+        from apiloop.api.app import app
+
+        with TestClient(app) as c:
+            fake_adapter = AsyncMock()
+            c.app.state.adapters["fake-provider"] = fake_adapter
+        # Exiting the TestClient context triggers the lifespan shutdown handler.
+        fake_adapter.close.assert_awaited_once()

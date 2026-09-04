@@ -205,3 +205,74 @@ class TestDefaultConfig:
         from apiloop.config import create_default_config
         config = create_default_config()
         assert "example-openai" in config.providers
+
+
+class TestMalformedConfig:
+    """Regression coverage: one malformed provider/model entry used to
+    silently take down every entry parsed *after* it in dict order (the
+    whole load loop shared one try/except), with only an aggregate log
+    warning and no way for a caller to know the config was incomplete."""
+
+    def test_bad_entry_does_not_drop_entries_after_it(self, config_file):
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(yaml.dump({
+            "providers": {
+                "good-before": {
+                    "id": "good-before", "name": "Good Before",
+                    "kind": "remote", "base_url": "https://before.com",
+                },
+                "bad": {
+                    "id": "bad", "name": "Bad",
+                    "kind": "not_a_real_kind", "base_url": "https://bad.com",
+                },
+                "good-after": {
+                    "id": "good-after", "name": "Good After",
+                    "kind": "remote", "base_url": "https://after.com",
+                },
+            }
+        }))
+        config = Config(config_path=config_file)
+        assert set(config.providers.keys()) == {"good-before", "good-after"}
+
+    def test_bad_entry_is_recorded_in_load_errors(self, config_file):
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(yaml.dump({
+            "providers": {
+                "bad": {
+                    "id": "bad", "name": "Bad",
+                    "kind": "not_a_real_kind", "base_url": "https://bad.com",
+                },
+            }
+        }))
+        config = Config(config_path=config_file)
+        assert len(config.load_errors) == 1
+        assert "bad" in config.load_errors[0]
+
+    def test_clean_config_has_no_load_errors(self, config_file):
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(yaml.dump({
+            "providers": {
+                "fine": {
+                    "id": "fine", "name": "Fine",
+                    "kind": "remote", "base_url": "https://fine.com",
+                },
+            }
+        }))
+        config = Config(config_path=config_file)
+        assert config.load_errors == []
+
+    def test_non_mapping_providers_section_does_not_crash(self, config_file):
+        """providers: [] (a list, not a mapping) must not raise - it should
+        be recorded and ignored, same as any other malformed section."""
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(yaml.dump({"providers": ["not", "a", "mapping"]}))
+        config = Config(config_path=config_file)
+        assert config.providers == {}
+        assert len(config.load_errors) == 1
+
+    def test_invalid_yaml_syntax_does_not_crash(self, config_file):
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("providers:\n  bad indentation\n\tmixed: tabs")
+        config = Config(config_path=config_file)
+        assert config.providers == {}
+        assert len(config.load_errors) == 1

@@ -86,10 +86,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for model in config.models.values():
         app.state.routing_engine.add_models([model])
 
+    # One adapter (and its pooled HTTP client) per provider, reused across
+    # requests for the life of the process - not constructed and abandoned
+    # on every single request.
+    app.state.adapters = {}
+
     logger.info(f"Loaded {len(config.providers)} providers, {len(config.models)} models")
     yield
     # Shutdown
+    for provider_id, adapter in app.state.adapters.items():
+        close = getattr(adapter, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception as e:
+                logger.warning(f"Error closing adapter for {provider_id}: {e}")
     logger.info("APIloop shutting down")
+
+
+def _get_or_create_adapter(app: FastAPI, provider, credential_manager):
+    """Reuse one adapter per provider instead of constructing (and leaking
+    the HTTP client of) a fresh one on every request."""
+    adapter = app.state.adapters.get(provider.id)
+    if adapter is None:
+        adapter = ProviderAdapterFactory.create(provider, credential_manager)
+        app.state.adapters[provider.id] = adapter
+    return adapter
 
 
 app = FastAPI(
@@ -161,8 +183,8 @@ async def chat_completions(request: NormalizedRequest):
             detail=f"No credential configured for provider: {route_result.provider_id}",
         )
 
-    # Create adapter
-    adapter = ProviderAdapterFactory.create(provider, cm)
+    # Reuse (or create and cache) the adapter for this provider
+    adapter = _get_or_create_adapter(app, provider, cm)
 
     try:
         # Execute the request

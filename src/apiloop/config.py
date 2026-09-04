@@ -46,6 +46,11 @@ class Config:
             "port": 8080,
             "cors_origins": ["http://localhost"],
         }
+        # Non-fatal problems found while loading config.yaml: a malformed
+        # entry is skipped rather than silently dropping everything after
+        # it (or everything, via one aggregate warning) - this records
+        # exactly what was skipped and why, for `apiloop doctor` and callers.
+        self.load_errors: list[str] = []
         self._load()
 
     def _load(self) -> None:
@@ -55,34 +60,60 @@ class Config:
             return
 
         try:
-            data = yaml.safe_load(self.config_path.read_text())
-            if not data:
-                return
+            raw = self.config_path.read_text()
+        except OSError as e:
+            msg = f"Failed to read config file {self.config_path}: {e}"
+            logger.warning(msg)
+            self.load_errors.append(msg)
+            return
 
-            # Load providers
-            for pid, pdata in data.get("providers", {}).items():
-                self.providers[pid] = ProviderDescriptor(**pdata)
+        try:
+            data = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            msg = f"Config file {self.config_path} is not valid YAML: {e}"
+            logger.error(msg)
+            self.load_errors.append(msg)
+            return
 
-            # Load models
-            for mid, mdata in data.get("models", {}).items():
-                self.models[mid] = ModelDescriptor(**mdata)
+        if not data:
+            return
 
-            # Load routing config
-            if "routing" in data:
-                self.routing.update(data["routing"])
+        self._load_section(data, "providers", self.providers, ProviderDescriptor)
+        self._load_section(data, "models", self.models, ModelDescriptor)
 
-            # Load logging config
-            if "logging" in data:
-                self.logging.update(data["logging"])
+        # Load routing config
+        if "routing" in data:
+            self.routing.update(data["routing"])
 
-            # Load API config
-            if "api" in data:
-                self.api.update(data["api"])
+        # Load logging config
+        if "logging" in data:
+            self.logging.update(data["logging"])
 
-            logger.debug(f"Loaded config from {self.config_path}")
+        # Load API config
+        if "api" in data:
+            self.api.update(data["api"])
 
-        except Exception as e:
-            logger.warning(f"Failed to load config: {e}")
+        logger.debug(f"Loaded config from {self.config_path}")
+
+    def _load_section(self, data: dict, key: str, target: dict, model_cls: type) -> None:
+        """Load one id -> descriptor section (providers/models), skipping
+        and recording individually malformed entries instead of letting one
+        bad entry silently take down every entry after it in the file.
+        """
+        section = data.get(key, {}) or {}
+        if not isinstance(section, dict):
+            msg = f"'{key}' section is not a mapping (got {type(section).__name__}); ignoring"
+            logger.warning(msg)
+            self.load_errors.append(msg)
+            return
+
+        for entry_id, entry_data in section.items():
+            try:
+                target[entry_id] = model_cls(**entry_data)
+            except Exception as e:
+                msg = f"Skipped {key[:-1]} '{entry_id}': {e}"
+                logger.warning(msg)
+                self.load_errors.append(msg)
 
     def save(self) -> None:
         """Save configuration to file."""

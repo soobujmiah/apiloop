@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import secrets
+import stat
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from pathlib import Path
+from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import load_config
@@ -16,6 +19,42 @@ from ..routing.engine import RoutingEngine
 from ..credentials.manager import CredentialManager
 
 logger = logging.getLogger(__name__)
+
+
+def _load_or_create_gateway_key(key_path: Path) -> str:
+    """Load the gateway's own inbound API key, generating one on first run.
+
+    Stored the same way as the credential master key (owner-only file,
+    not inside config.yaml) so it doesn't end up in a file that's
+    routinely edited/diffed/backed up alongside non-secret config.
+    """
+    if key_path.exists():
+        return key_path.read_text().strip()
+    key = secrets.token_urlsafe(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(key)
+    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    return key
+
+
+async def require_api_key(
+    request: Request, authorization: Optional[str] = Header(default=None)
+) -> None:
+    """FastAPI dependency gating a route behind the gateway's own API key.
+
+    This authenticates *callers of APIloop*, separate from the per-provider
+    credentials APIloop uses to call out to OpenAI/Anthropic/etc.
+    """
+    expected = getattr(request.app.state, "gateway_api_key", None)
+    if not expected:
+        raise HTTPException(status_code=503, detail="Gateway API key not configured")
+
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[len("Bearer "):]
+
+    if not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 @asynccontextmanager
@@ -29,6 +68,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.routing_engine = RoutingEngine(
         strategy=config.routing.get("strategy", "health_aware"),
     )
+
+    gateway_key_path = config.config_path.parent / ".gateway_key"
+    key_existed = gateway_key_path.exists()
+    app.state.gateway_api_key = _load_or_create_gateway_key(gateway_key_path)
+    if not key_existed:
+        logger.warning(
+            f"Generated new gateway API key at {gateway_key_path} "
+            f"(shown once): {app.state.gateway_api_key}"
+        )
 
     # Register providers
     for provider in config.providers.values():
@@ -67,7 +115,7 @@ async def root():
     }
 
 
-@app.get("/v1/models")
+@app.get("/v1/models", dependencies=[Depends(require_api_key)])
 async def list_models():
     """List available models (OpenAI-compatible endpoint)."""
     config = load_config()
@@ -82,7 +130,7 @@ async def list_models():
     return {"data": models, "object": "list"}
 
 
-@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions", dependencies=[Depends(require_api_key)])
 async def chat_completions(request: NormalizedRequest):
     """Handle chat completion requests (OpenAI-compatible endpoint)."""
     config = load_config()
@@ -133,7 +181,7 @@ async def chat_completions(request: NormalizedRequest):
         )
 
 
-@app.post("/v1/audio/transcriptions")
+@app.post("/v1/audio/transcriptions", dependencies=[Depends(require_api_key)])
 async def audio_transcriptions(request: dict):
     """Handle audio transcription requests."""
     # TODO: Implement audio transcription support
@@ -143,7 +191,7 @@ async def audio_transcriptions(request: dict):
     )
 
 
-@app.post("/v1/embeddings")
+@app.post("/v1/embeddings", dependencies=[Depends(require_api_key)])
 async def embeddings(request: dict):
     """Handle embedding requests."""
     # TODO: Implement embeddings support
@@ -191,10 +239,13 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-@app.get("/debug/config")
+@app.get("/debug/config", dependencies=[Depends(require_api_key)])
 async def debug_config():
-    """Debug endpoint for configuration (not for production)."""
+    """Debug endpoint for configuration. Requires the gateway API key AND an
+    explicit opt-in (config.api.debug_endpoints_enabled) - off by default."""
     config = load_config()
+    if not config.api.get("debug_endpoints_enabled", False):
+        raise HTTPException(status_code=404, detail="Not found")
     return {
         "providers": list(config.providers.keys()),
         "models": list(config.models.keys()),

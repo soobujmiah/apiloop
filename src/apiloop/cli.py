@@ -330,6 +330,22 @@ def test(strategy):
 # ─── System Commands ─────────────────────────────────────────────────────────
 
 @cli.command()
+@click.option("--host", default=None, help="Host to bind (overrides config)")
+@click.option("--port", default=None, type=int, help="Port to bind (overrides config)")
+def start(host, port):
+    """Start the APIloop gateway server."""
+    import uvicorn
+    from apiloop.config import load_config
+
+    config = load_config()
+    bind_host = host or config.api.get("host", "127.0.0.1")
+    bind_port = port or config.api.get("port", 8080)
+
+    click.echo(f"Starting APIloop gateway on {bind_host}:{bind_port}")
+    uvicorn.run("apiloop.api.app:app", host=bind_host, port=bind_port)
+
+
+@cli.command()
 def doctor():
     """Run diagnostics and report system status."""
     from apiloop.config import load_config, validate_config

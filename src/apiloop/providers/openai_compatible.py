@@ -38,6 +38,12 @@ class OpenAICompatibleAdapter(ProviderAdapter):
 
     def __init__(self, provider: ProviderDescriptor, credential_manager: Any):
         super().__init__(provider, credential_manager)
+        # CHAT_ENDPOINT/MODELS_ENDPOINT already include the /v1 prefix, but the
+        # documented convention (README, CLI examples) configures base_url with
+        # a trailing /v1 too (e.g. "https://api.openai.com/v1"). Strip it here so
+        # both conventions resolve to a single /v1 instead of "/v1/v1/...".
+        if self._base_url.endswith("/v1"):
+            self._base_url = self._base_url[: -len("/v1")]
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -93,7 +99,7 @@ class OpenAICompatibleAdapter(ProviderAdapter):
 
             if response.status_code >= 400:
                 error_body = await response.aread()
-                error_msg = self._parse_error(response, error_body)
+                error_msg = self._redact_secrets(self._parse_error(response, error_body))
                 self.set_health(ProviderHealth.UNAVAILABLE, error_msg)
                 raise Exception(f"Provider error {response.status_code}: {error_msg}")
 

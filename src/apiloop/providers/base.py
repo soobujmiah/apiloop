@@ -157,8 +157,12 @@ class ProviderAdapter(ABC):
         import re
         # Redact bearer tokens
         text = re.sub(r'Bearer\s+[a-zA-Z0-9\-_.~+/]+=*', 'Bearer ***REDACTED***', text)
-        # Redact API keys (common patterns)
-        text = re.sub(r'(api[_-]?key["\s:=]+)[a-zA-Z0-9\-_.~+/]{8,}', r'\1***REDACTED***', text, flags=re.IGNORECASE)
+        # Redact API keys (common patterns) - allow whitespace between "api"/"key",
+        # e.g. "API key: ..." not just "api_key=..."
+        text = re.sub(r'(api[_\s-]?key["\s:=]+)[a-zA-Z0-9\-_.~+/]{8,}', r'\1***REDACTED***', text, flags=re.IGNORECASE)
+        # Redact bare secret-shaped tokens regardless of surrounding phrasing
+        # (common provider key prefix across OpenAI, Anthropic, etc.)
+        text = re.sub(r'\bsk-[a-zA-Z0-9\-_]{8,}', 'sk-***REDACTED***', text)
         return text
 
     def set_health(self, health: str, message: Optional[str] = None) -> None:

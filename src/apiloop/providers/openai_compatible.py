@@ -88,7 +88,6 @@ class OpenAICompatibleAdapter(ProviderAdapter):
                 self.CHAT_ENDPOINT,
                 json=provider_request,
                 headers=headers,
-                stream=stream,
             )
             elapsed_ms = self._now_ms() - start_time
 

@@ -59,6 +59,10 @@ class ProviderDescriptor(BaseModel):
     id: str  # unique identifier, e.g. "openai", "ollama-local"
     name: str  # human-readable name
     kind: ProviderKind
+    # Which adapter implementation to use (registry key in ProviderAdapterFactory),
+    # e.g. "openai_compatible", "anthropic". Distinct from `kind` (local/remote/hybrid),
+    # which describes deployment topology, not the vendor API shape.
+    adapter_type: str = "openai_compatible"
     base_url: str
     capabilities: dict[str, Capability] = Field(default_factory=dict)
     input_modalities: list[InputModality] = Field(default_factory=list)

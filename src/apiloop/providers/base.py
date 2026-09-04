@@ -202,7 +202,7 @@ class ProviderAdapterFactory:
         Raises:
             ValueError: If no adapter is registered for the provider
         """
-        adapter_class = cls._registry.get(provider.id)
+        adapter_class = cls._registry.get(provider.adapter_type)
         if not adapter_class:
             # Try to use generic OpenAI-compatible adapter as fallback
             # Import here to avoid circular imports

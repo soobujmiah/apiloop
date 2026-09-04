@@ -123,6 +123,7 @@ def add(name, provider_type, base_url, kind, auth_method, streaming):
         id=name,
         name=name,
         kind=provider_kind,
+        adapter_type=provider_type,
         base_url=base_url.rstrip("/"),
         authentication_method=auth_method,
         supports_streaming=streaming,

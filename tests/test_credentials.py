@@ -10,6 +10,7 @@ import pytest
 
 from apiloop.credentials.manager import (
     Credential,
+    CredentialEncryptionError,
     CredentialError,
     CredentialManager,
     CredentialNotFoundError,
@@ -189,6 +190,37 @@ class TestCredentialManager:
         # Verify the credential was loaded correctly
         assert cred.provider_id == "test"
         assert cred.account_name == "default"
+        assert cred.secret.get_secret_value() == "persistent-secret"
+
+    def test_secret_value_survives_save_and_reload(self, temp_config_dir):
+        """Regression: _save_credentials() built its payload via
+        cred.model_dump(), which redacts the `secret` field (correct for
+        display/logging - see Credential's field_serializer - but that
+        serializer was being reused for the encrypted store's own internal
+        persistence too). Every credential's real secret was silently
+        replaced with an unusable redacted stub (e.g. "sk-t***2345") the
+        moment it was saved, recoverable only in the same in-memory
+        instance that added it - a fresh load, or this manager's own
+        resync-before-mutate, would load garbage instead of the real key.
+        """
+        storage_path = temp_config_dir / "credentials.json"
+        cm1 = CredentialManager(storage_path=storage_path)
+        cm1.add_credential(provider_id="test", account_name="default", secret="sk-real-usable-secret-value")
+        del cm1
+
+        cm2 = CredentialManager(storage_path=storage_path)
+        assert cm2.get_secret_value("test", "default") == "sk-real-usable-secret-value"
+
+    def test_secret_value_survives_a_second_add_triggering_resync(self, temp_config_dir):
+        """A second mutation resyncs from disk before writing (see the N8
+        fix) - that reload must not corrupt the first credential's secret."""
+        storage_path = temp_config_dir / "credentials.json"
+        cm = CredentialManager(storage_path=storage_path)
+        cm.add_credential(provider_id="p1", account_name="a", secret="sk-first-secret")
+        cm.add_credential(provider_id="p2", account_name="b", secret="sk-second-secret")
+
+        assert cm.get_secret_value("p1", "a") == "sk-first-secret"
+        assert cm.get_secret_value("p2", "b") == "sk-second-secret"
 
     def test_validation_requires_credentials(self, credential_manager):
         """Test validation when no credentials exist."""
@@ -318,3 +350,89 @@ class TestCredentialConcurrency:
         cm_a.add_credential(provider_id="p2", account_name="b", secret="secret-b")
         ids = {c.id for c in cm_a.list_credentials()}
         assert ids == {"p2:b"}
+
+
+class TestCorruptedStore:
+    def test_corrupted_store_raises_encryption_error_not_nameerror(self, temp_config_dir):
+        """Regression: `except InvalidToken:` (no `as e`) meant `from e`
+        raised NameError instead of the intended CredentialEncryptionError,
+        so a corrupted store crashed with a confusing internal error
+        instead of a catchable, documented exception."""
+        storage_path = temp_config_dir / "credentials.json"
+        CredentialManager(storage_path=storage_path)  # creates the master key
+
+        storage_path.write_bytes(b"gAAAAABnotavalidfernettoken" + b"x" * 60)
+
+        with pytest.raises(CredentialEncryptionError):
+            CredentialManager(storage_path=storage_path)
+
+
+class TestMasterKeyRotation:
+    def test_rotation_changes_key_file_contents(self, temp_config_dir):
+        storage_path = temp_config_dir / "credentials.json"
+        key_path = temp_config_dir / ".master_key"
+        cm = CredentialManager(storage_path=storage_path)
+        old_key = key_path.read_bytes()
+
+        cm.rotate_master_key()
+
+        assert key_path.read_bytes() != old_key
+
+    def test_rotation_preserves_all_credentials(self, temp_config_dir):
+        storage_path = temp_config_dir / "credentials.json"
+        cm = CredentialManager(storage_path=storage_path)
+        cm.add_credential(provider_id="p1", account_name="a", secret="secret-a")
+        cm.add_credential(provider_id="p2", account_name="b", secret="secret-b")
+
+        cm.rotate_master_key()
+
+        cm2 = CredentialManager(storage_path=storage_path)
+        assert cm2.get_secret_value("p1", "a") == "secret-a"
+        assert cm2.get_secret_value("p2", "b") == "secret-b"
+
+    def test_rotation_actually_re_encrypts_not_just_renames_key(self, temp_config_dir):
+        """The old key must no longer decrypt the store after rotation -
+        otherwise this would just be theater, not real re-keying."""
+        from cryptography.fernet import Fernet, InvalidToken
+
+        storage_path = temp_config_dir / "credentials.json"
+        key_path = temp_config_dir / ".master_key"
+        cm = CredentialManager(storage_path=storage_path)
+        cm.add_credential(provider_id="p1", account_name="a", secret="secret-a")
+        old_key = key_path.read_bytes()
+
+        cm.rotate_master_key()
+
+        old_fernet = Fernet(old_key)
+        with pytest.raises(InvalidToken):
+            old_fernet.decrypt(storage_path.read_bytes())
+
+    def test_rotation_cleans_up_backup_on_success(self, temp_config_dir):
+        storage_path = temp_config_dir / "credentials.json"
+        backup_path = temp_config_dir / ".master_key.previous"
+        cm = CredentialManager(storage_path=storage_path)
+
+        cm.rotate_master_key()
+
+        assert not backup_path.exists()
+
+    def test_rotation_rolls_back_on_failure(self, temp_config_dir):
+        """If re-encryption fails partway, the key file and in-memory
+        Fernet instance must be restored so the store stays decryptable
+        with the credentials it already had - not left in a broken,
+        half-migrated state."""
+        storage_path = temp_config_dir / "credentials.json"
+        key_path = temp_config_dir / ".master_key"
+        cm = CredentialManager(storage_path=storage_path)
+        cm.add_credential(provider_id="p1", account_name="a", secret="secret-a")
+        old_key = key_path.read_bytes()
+
+        with patch.object(CredentialManager, "_save_credentials", side_effect=OSError("disk full (simulated)")):
+            with pytest.raises(OSError):
+                cm.rotate_master_key()
+
+        # Key file rolled back to the original key...
+        assert key_path.read_bytes() == old_key
+        # ...and the store is still readable with it, credential intact.
+        cm2 = CredentialManager(storage_path=storage_path)
+        assert cm2.get_secret_value("p1", "a") == "secret-a"

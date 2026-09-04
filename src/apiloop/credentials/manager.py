@@ -78,9 +78,30 @@ class CredentialManager:
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "credentials.json"
 
+    @property
+    def _key_path(self) -> Path:
+        return self._storage_path.parent / ".master_key"
+
+    @staticmethod
+    def _write_key_atomic(key_path: Path, key: bytes) -> None:
+        """Write a key file via temp file + rename, so a crash mid-write
+        can't leave a truncated/corrupt key in place."""
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(key_path.parent), prefix=".master_key-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "wb") as tmp_file:
+                tmp_file.write(key)
+            os.chmod(tmp_name, stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(tmp_name, key_path)
+        except BaseException:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+
     def _load_master_key(self) -> None:
         """Load or generate the master encryption key."""
-        key_path = self._storage_path.parent / ".master_key"
+        key_path = self._key_path
 
         if key_path.exists():
             try:
@@ -92,9 +113,7 @@ class CredentialManager:
         else:
             # Generate new master key
             key = Fernet.generate_key()
-            key_path.write_bytes(key)
-            # Restrict permissions: owner read/write only
-            key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            self._write_key_atomic(key_path, key)
             self._fernet = Fernet(key)
             logger.info("Generated new master encryption key")
 
@@ -127,7 +146,7 @@ class CredentialManager:
                 self._credentials[cred.id] = cred
 
             logger.debug(f"Loaded {len(self._credentials)} credentials")
-        except InvalidToken:
+        except InvalidToken as e:
             logger.error("Failed to decrypt credentials - possible key corruption")
             raise CredentialEncryptionError("Credential decryption failed") from e
         except Exception as e:
@@ -142,6 +161,14 @@ class CredentialManager:
         credentials_data = []
         for cred in self._credentials.values():
             data = cred.model_dump()
+            # cred.model_dump() redacts `secret` (via Credential's
+            # field_serializer) - correct for display/logging, but this
+            # payload is the encrypted store's own internal persistence:
+            # it must hold the real, recoverable secret, or every
+            # credential becomes permanently unusable after the next
+            # save+reload cycle. The Fernet encryption below is what
+            # keeps this safe at rest, not redaction.
+            data["secret"] = cred.secret.get_secret_value()
             # Convert datetime to ISO format string for JSON serialization
             if isinstance(data.get("stored_at"), datetime):
                 data["stored_at"] = data["stored_at"].isoformat()
@@ -297,6 +324,50 @@ class CredentialManager:
 
         logger.info(f"Rotated credential: {cred_id}")
         return credential
+
+    def rotate_master_key(self) -> None:
+        """Rotate the Fernet master key protecting the whole credential store.
+
+        Unlike rotate_credential() (which changes one stored secret's
+        value), this re-keys the encryption itself - e.g. after a
+        suspected key compromise, or as routine hygiene. The previous key
+        is kept as a `.master_key.previous` backup until the new key and
+        the re-encrypted store are both confirmed written, and is
+        restored automatically if anything fails partway through, so a
+        crash or error here can't leave the store permanently
+        undecryptable.
+        """
+        key_path = self._key_path
+        backup_path = key_path.with_name(key_path.name + ".previous")
+
+        with self._locked():
+            self._load_credentials()  # resync with current on-disk state/key first
+
+            old_key_bytes = key_path.read_bytes() if key_path.exists() else None
+            new_key = Fernet.generate_key()
+
+            if old_key_bytes is not None:
+                self._write_key_atomic(backup_path, old_key_bytes)
+
+            try:
+                self._write_key_atomic(key_path, new_key)
+                self._fernet = Fernet(new_key)
+                self._save_credentials()  # re-encrypts self._credentials under the new key
+            except BaseException:
+                # Roll back to the previous key so the store stays decryptable.
+                if old_key_bytes is not None:
+                    self._write_key_atomic(key_path, old_key_bytes)
+                    self._fernet = Fernet(old_key_bytes)
+                logger.error(
+                    "Master key rotation failed and was rolled back; "
+                    f"previous key also preserved at {backup_path}"
+                )
+                raise
+            else:
+                if backup_path.exists():
+                    backup_path.unlink()
+
+        logger.info("Rotated credential store master encryption key")
 
     def validate_provider_credentials(
         self,

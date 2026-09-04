@@ -125,3 +125,39 @@ class TestProviderCredential:
             "--account", "default", "--api-key", "sk-test-key-12345",
         ])
         assert result.exit_code == 1
+
+
+class TestDoctor:
+    def test_doctor_handles_corrupted_credential_store_without_crashing(self, runner, tmp_path):
+        """Regression: a corrupted credential store used to crash `doctor`
+        itself (first as an unhandled NameError - see M1 - then, after that
+        was fixed, as an unhandled CredentialEncryptionError) instead of
+        being reported cleanly by the one command whose whole job is
+        diagnosing exactly this kind of problem."""
+        cred_path = tmp_path / ".config" / "apiloop" / "credentials.json"
+        cred_path.parent.mkdir(parents=True, exist_ok=True)
+        cred_path.write_text("not-valid-fernet-ciphertext-" + "x" * 60)
+
+        result = runner.invoke(cli, ["doctor"])
+        assert result.exit_code == 0
+        assert "Credential store error" in result.output
+        assert "Diagnostic complete" in result.output
+
+
+class TestRotateMasterKey:
+    def test_rotate_master_key_preserves_credentials(self, runner):
+        runner.invoke(cli, [
+            "provider", "add", "my-openai",
+            "--type", "openai_compatible", "--base-url", "https://api.openai.com/v1",
+        ])
+        runner.invoke(cli, [
+            "provider", "credential", "add", "my-openai",
+            "--account", "default", "--api-key", "sk-rotate-me-12345",
+        ])
+
+        result = runner.invoke(cli, ["rotate-master-key", "--yes"])
+        assert result.exit_code == 0
+
+        from apiloop.credentials.manager import CredentialManager
+        cm = CredentialManager()
+        assert cm.get_secret_value("my-openai", "default") == "sk-rotate-me-12345"

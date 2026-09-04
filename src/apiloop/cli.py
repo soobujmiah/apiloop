@@ -363,11 +363,28 @@ def start(host, port):
     uvicorn.run("apiloop.api.app:app", host=bind_host, port=bind_port)
 
 
+@cli.command(name="rotate-master-key")
+@click.confirmation_option(
+    prompt="This re-encrypts your entire credential store under a new key. Continue?"
+)
+def rotate_master_key():
+    """Rotate the credential store's master encryption key."""
+    from apiloop.credentials.manager import CredentialManager, CredentialError
+
+    cm = CredentialManager()
+    try:
+        cm.rotate_master_key()
+        click.echo("✓ Master encryption key rotated successfully.")
+    except CredentialError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cli.command()
 def doctor():
     """Run diagnostics and report system status."""
     from apiloop.config import load_config, validate_config
-    from apiloop.credentials.manager import CredentialManager
+    from apiloop.credentials.manager import CredentialManager, CredentialEncryptionError
 
     click.echo("APIloop Diagnostic Report")
     click.echo("=" * 60)
@@ -392,13 +409,25 @@ def doctor():
         click.echo("✓ Configuration valid")
         click.echo("")
 
+    # Credential store - constructed once and reused below; a corrupted
+    # store (bad key, damaged file) must not crash the diagnostic tool
+    # itself with a raw traceback.
+    try:
+        cm = CredentialManager()
+    except CredentialEncryptionError as e:
+        cm = None
+        click.echo(f"❌ Credential store error: {e}")
+        click.echo("  (the store may be corrupted, or the master key may be missing/wrong)")
+        click.echo("")
+
     # Provider status
     click.echo("Providers:")
     if config.providers:
         for pid, p in config.providers.items():
-            cm = CredentialManager()
-            cred = cm.get_credential(pid)
-            has_cred = "✓" if cred else "✗"
+            if cm is not None:
+                has_cred = "✓" if cm.get_credential(pid) else "✗"
+            else:
+                has_cred = "?"
             click.echo(f"  [{has_cred}] {pid}: {p.base_url} ({p.kind.value})")
     else:
         click.echo("  No providers configured")
@@ -409,8 +438,10 @@ def doctor():
     click.echo("")
 
     # Credential storage
-    cm = CredentialManager()
-    click.echo(f"Stored credentials: {cm.credential_count}")
+    if cm is not None:
+        click.echo(f"Stored credentials: {cm.credential_count}")
+    else:
+        click.echo("Stored credentials: unavailable (see credential store error above)")
     click.echo("")
 
     # Python environment

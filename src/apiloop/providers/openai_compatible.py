@@ -112,10 +112,15 @@ class OpenAICompatibleAdapter(ProviderAdapter):
 
         except httpx.HTTPStatusError as e:
             self.set_health(ProviderHealth.UNAVAILABLE, str(e))
-            raise self.normalize_error(e) from e
+            # NormalizedError is a plain Pydantic model, not an Exception -
+            # `raise` requires a BaseException, so raise a real exception
+            # carrying the normalized (redacted) message instead of the
+            # model itself. No "Provider error:" prefix here - the gateway's
+            # own error handler already adds one when it catches this.
+            raise Exception(self.normalize_error(e).message) from e
         except httpx.RequestError as e:
             self.set_health(ProviderHealth.UNAVAILABLE, f"Connection error: {e}")
-            raise self.normalize_error(e) from e
+            raise Exception(self.normalize_error(e).message) from e
 
     async def list_models(self) -> list[ModelDescriptor]:
         """Discover available models.

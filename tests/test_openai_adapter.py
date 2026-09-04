@@ -4,6 +4,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import json
 
+import httpx
+import respx
+
 from apiloop.providers.openai_compatible import OpenAICompatibleAdapter
 from apiloop.models import (
     ChatMessage,
@@ -172,3 +175,30 @@ class TestOpenAICompatibleAdapter:
         redacted = OpenAICompatibleAdapter._redact_secrets(text)
         assert "sk-test-key-12345" not in redacted
         assert "Bearer ***REDACTED***" in redacted
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_connection_error_is_catchable(self, adapter):
+        """Regression: a real transport-level failure (connection refused,
+        DNS failure, etc.) raised httpx.RequestError, which the code caught
+        and then re-raised as `self.normalize_error(e)` - a plain Pydantic
+        model, not an Exception. `raise` on a non-exception object always
+        crashes with TypeError('exceptions must derive from BaseException'),
+        masking the real connection error entirely. Every other test in this
+        file mocks httpx.AsyncClient itself, which never exercises this path
+        at all - that's exactly why this went undetected. Uses respx to
+        simulate the failure at the transport level instead.
+        """
+        with respx.mock(assert_all_called=True) as mock:
+            mock.post("https://api.test.com/v1/chat/completions").mock(
+                side_effect=httpx.ConnectError("Connection refused")
+            )
+
+            request = NormalizedRequest(
+                model="gpt-4",
+                messages=[ChatMessage(role="user", content="Hello")],
+            )
+            with pytest.raises(Exception) as exc_info:
+                await adapter.chat_completion(request)
+
+            assert not isinstance(exc_info.value, TypeError)
+            assert "connection" in str(exc_info.value).lower()

@@ -1,0 +1,30 @@
+schema_version: 1
+project_id: apiloop
+repository: soobujmiah/apiloop
+generated_at: '2026-09-25T14:10:09Z'
+generated_by: tools/repo_knowledge init
+version: 3e2644f
+head:
+  commit: 3e2644fcc5b69b9c8435f9c1a1445210de588a5e
+  branch: main
+  committed_at: '2026-09-04T21:00:13Z'
+phases:
+  source: not_configured
+  completed: []
+  active: null
+  next: null
+build:
+  status: unknown
+  run_id: null
+  at: null
+test:
+  status: unknown
+  run_id: null
+  at: null
+  summary: null
+last_successful_build: null
+last_failed_build: null
+sync:
+  status: pending
+  last_synced_at: '2026-09-25T14:10:09Z'
+  source: local

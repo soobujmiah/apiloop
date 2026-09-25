@@ -1,0 +1,6 @@
+event_id: build-8d8a7ec-36145956567
+repository: soobujmiah/apiloop
+commit: 8d8a7eca25787636899fe31cd4f776d57b32c5d1
+kind: build
+occurred_at: '2026-09-25T14:13:23Z'
+status: failed

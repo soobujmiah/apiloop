@@ -1,13 +1,13 @@
 schema_version: 1
 project_id: apiloop
 repository: soobujmiah/apiloop
-generated_at: '2026-09-25T14:13:23Z'
+generated_at: '2026-09-26T21:48:40Z'
 generated_by: tools/repo_knowledge collect
-version: 8d8a7ec
+version: 4a74b74
 head:
-  commit: 8d8a7eca25787636899fe31cd4f776d57b32c5d1
+  commit: 4a74b74a549eb929442ab22b553937f7ff0af8f6
   branch: main
-  committed_at: '2026-09-25T14:12:41Z'
+  committed_at: '2026-09-26T21:47:32Z'
 phases:
   source: not_configured
   completed: []
@@ -15,19 +15,25 @@ phases:
   next: null
 build:
   status: failed
-  run_id: '36145956567'
-  at: '2026-09-25T14:13:23Z'
+  run_id: '36274133331'
+  commit: 4a74b74a549eb929442ab22b553937f7ff0af8f6
+  run_attempt: '1'
+  at: '2026-09-26T21:48:40Z'
+  timestamp_source: observed
 test:
   status: passed
-  run_id: null
-  at: '2026-09-25T14:13:23Z'
+  run_id: '36274133331'
+  commit: 4a74b74a549eb929442ab22b553937f7ff0af8f6
+  run_attempt: '1'
+  at: '2026-09-26T21:48:40Z'
+  timestamp_source: observed
   summary: pytest (tests/)
 last_successful_build: null
 last_failed_build:
-  commit: 8d8a7eca25787636899fe31cd4f776d57b32c5d1
-  at: '2026-09-25T14:13:23Z'
-  run_id: '36145956567'
+  commit: 4a74b74a549eb929442ab22b553937f7ff0af8f6
+  at: '2026-09-26T21:48:40Z'
+  run_id: '36274133331'
 sync:
   status: ok
-  last_synced_at: '2026-09-25T14:13:23Z'
+  last_synced_at: '2026-09-26T21:48:40Z'
   source: ci

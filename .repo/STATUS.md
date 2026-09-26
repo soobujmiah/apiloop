@@ -2,15 +2,15 @@
 # apiloop -- deterministic status
 
 - Repository: `soobujmiah/apiloop`
-- Generated at: 2026-09-25T14:13:23Z (by `tools/repo_knowledge collect`)
-- Version: `8d8a7ec`
-- Head: `8d8a7eca25787636899fe31cd4f776d57b32c5d1` on `main` (2026-09-25T14:12:41Z)
+- Generated at: 2026-09-26T21:48:40Z (by `tools/repo_knowledge collect`)
+- Version: `4a74b74`
+- Head: `4a74b74a549eb929442ab22b553937f7ff0af8f6` on `main` (2026-09-26T21:47:32Z)
 
 ## Build / test
 
-- Build: **failed** (run `36145956567`)
+- Build: **failed** (run `36274133331`)
 - Test: **passed** -- pytest (tests/)
-- Last failed build: `8d8a7eca25787636899fe31cd4f776d57b32c5d1` at 2026-09-25T14:13:23Z
+- Last failed build: `4a74b74a549eb929442ab22b553937f7ff0af8f6` at 2026-09-26T21:48:40Z
 
 ## Phases
 - Not configured (no `.repo/phases.yaml`).
@@ -19,4 +19,4 @@
 
 - Status: ok
 - Source: ci
-- Last synced at: 2026-09-25T14:13:23Z
+- Last synced at: 2026-09-26T21:48:40Z

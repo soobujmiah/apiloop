@@ -1,0 +1,8 @@
+event_id: commit-d1e5bebf4226-d33ed944fbc0f374
+repository: soobujmiah/apiloop
+commit: d1e5bebf42269edfbcd0a2834e8753120b5ab554
+kind: commit
+occurred_at: '2026-09-29T17:16:45Z'
+status: completed
+summary: 'feat(repo-knowledge): upgrade vendored tooling, schemas, and final-run sync
+  contract'

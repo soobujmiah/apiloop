@@ -1,0 +1,8 @@
+event_id: commit-af48f29dbeef-3d51ea87a4c1952a
+repository: soobujmiah/apiloop
+commit: af48f29dbeefa402597670cc3394fca81b1fef0b
+kind: commit
+occurred_at: '2026-09-29T22:36:16Z'
+status: completed
+summary: Declare the repository's canonical type and add the documentation scaffold
+  (migration waves 2/3)

@@ -1,13 +1,13 @@
 schema_version: 1
 project_id: apiloop
 repository: soobujmiah/apiloop
-generated_at: '2026-09-29T17:17:25Z'
+generated_at: '2026-09-29T22:40:21Z'
 generated_by: tools/repo_knowledge collect
-version: d1e5beb
+version: af48f29
 head:
-  commit: d1e5bebf42269edfbcd0a2834e8753120b5ab554
+  commit: af48f29dbeefa402597670cc3394fca81b1fef0b
   branch: main
-  committed_at: '2026-09-29T17:16:45Z'
+  committed_at: '2026-09-29T22:36:16Z'
 phases:
   source: not_configured
   completed: []
@@ -15,33 +15,33 @@ phases:
   next: null
 build:
   status: failed
-  run_id: '36603809974'
-  commit: d1e5bebf42269edfbcd0a2834e8753120b5ab554
+  run_id: '36640552806'
+  commit: af48f29dbeefa402597670cc3394fca81b1fef0b
   run_attempt: '1'
-  at: '2026-09-29T17:17:25Z'
+  at: '2026-09-29T22:40:21Z'
   timestamp_source: observed
   workflow_name: Repo Knowledge Sync
   event_type: push
   actor: soobujmiah
-  run_url: https://github.com/soobujmiah/apiloop/actions/runs/36603809974
+  run_url: https://github.com/soobujmiah/apiloop/actions/runs/36640552806
 test:
   status: passed
-  run_id: '36603809974'
-  commit: d1e5bebf42269edfbcd0a2834e8753120b5ab554
+  run_id: '36640552806'
+  commit: af48f29dbeefa402597670cc3394fca81b1fef0b
   run_attempt: '1'
-  at: '2026-09-29T17:17:25Z'
+  at: '2026-09-29T22:40:21Z'
   timestamp_source: observed
   workflow_name: Repo Knowledge Sync
   event_type: push
   actor: soobujmiah
-  run_url: https://github.com/soobujmiah/apiloop/actions/runs/36603809974
+  run_url: https://github.com/soobujmiah/apiloop/actions/runs/36640552806
   summary: pytest (tests/)
 last_successful_build: null
 last_failed_build:
-  commit: d1e5bebf42269edfbcd0a2834e8753120b5ab554
-  at: '2026-09-29T17:17:25Z'
-  run_id: '36603809974'
+  commit: af48f29dbeefa402597670cc3394fca81b1fef0b
+  at: '2026-09-29T22:40:21Z'
+  run_id: '36640552806'
 sync:
   status: ok
-  last_synced_at: '2026-09-29T17:17:25Z'
+  last_synced_at: '2026-09-29T22:40:21Z'
   source: ci
